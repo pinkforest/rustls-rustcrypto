@@ -5,16 +5,41 @@ use crypto::{SharedSecret, SupportedKxGroup};
 use paste::paste;
 use rustls::crypto;
 
-#[derive(Debug)]
-pub struct X25519;
+use crate::Arc;
+use crate::Mutex;
+use crate::RngCore;
+use crate::CryptoRng;
 
-impl crypto::SupportedKxGroup for X25519 {
+// pub kx_groups: Vec<&'static dyn SupportedKxGroup>,
+pub fn generate_kx_groups<'rng, R: RngCore + CryptoRng + Send + Sync + 'rng>(csprng: &'rng mut R) -> Vec<&'static (dyn SupportedKxGroup + 'rng)> {
+    vec![&X25519 { csprng: Arc::new(Mutex::new(csprng)) }, &SecP256R1, &SecP384R1]
+}
+
+//pub const ALL_KX_GROUPS: &[&dyn SupportedKxGroup] = &[&X25519, &SecP256R1, &SecP384R1];
+
+pub struct X25519<'rng, R: RngCore + CryptoRng + Send + Sync + 'rng> {
+    pub(crate) csprng: Arc<Mutex<&'rng mut R>>,
+}
+
+impl<'rng, R: RngCore + CryptoRng + Send + Sync> core::fmt::Debug for X25519<'rng, R> {
+    fn fmt(&self, _: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        todo!()
+    }
+}
+
+use std::ops::DerefMut;
+
+impl<'rng, R: RngCore + CryptoRng + Send + Sync> crypto::SupportedKxGroup for X25519<'rng, R> {
     fn name(&self) -> rustls::NamedGroup {
         rustls::NamedGroup::X25519
     }
 
     fn start(&self) -> Result<Box<dyn crypto::ActiveKeyExchange>, rustls::Error> {
-        let priv_key = x25519_dalek::EphemeralSecret::random_from_rng(rand_core::OsRng);
+
+        let mut csprng_m = self.csprng.lock().unwrap();
+        let csprng = csprng_m.deref_mut();
+
+        let priv_key = x25519_dalek::EphemeralSecret::random_from_rng(csprng);
         let pub_key = (&priv_key).into();
         Ok(Box::new(X25519KeyExchange { priv_key, pub_key }))
     }
@@ -42,7 +67,7 @@ impl crypto::ActiveKeyExchange for X25519KeyExchange {
     }
 
     fn group(&self) -> rustls::NamedGroup {
-        X25519.name()
+        rustls::NamedGroup::X25519
     }
 }
 
@@ -105,4 +130,3 @@ macro_rules! impl_kx {
 impl_kx! {SecP256R1, rustls::NamedGroup::secp256r1, p256::ecdh::EphemeralSecret, p256::PublicKey}
 impl_kx! {SecP384R1, rustls::NamedGroup::secp384r1, p384::ecdh::EphemeralSecret, p384::PublicKey}
 
-pub const ALL_KX_GROUPS: &[&dyn SupportedKxGroup] = &[&X25519, &SecP256R1, &SecP384R1];

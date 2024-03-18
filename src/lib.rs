@@ -16,32 +16,75 @@ use rustls::crypto::{
 };
 use rustls::{CipherSuite, SupportedCipherSuite, Tls13CipherSuite};
 
+#[cfg(feature = "getrandom")]
+use rand_core::OsRng as ChosenRng;
+
 #[cfg(feature = "tls12")]
 use rustls::SignatureScheme;
 
-#[derive(Debug)]
-pub struct Provider;
+use rand_core::CryptoRng;
+use rand_core::RngCore;
 
-pub fn provider() -> CryptoProvider {
-    CryptoProvider {
-        cipher_suites: ALL_CIPHER_SUITES.to_vec(),
-        kx_groups: kx::ALL_KX_GROUPS.to_vec(),
-        signature_verification_algorithms: verify::ALGORITHMS,
-        secure_random: &Provider,
-        key_provider: &Provider,
+// TODO: Ditto.
+use std::sync::Mutex;
+use std::ops::DerefMut;
+
+pub struct Provider<'rng, R: RngCore + CryptoRng + Send + Sync + 'rng> {
+    pub(crate) csprng: Arc<Mutex<&'rng mut R>>,
+}
+
+impl<'rng, R: RngCore + CryptoRng + Send + Sync> core::fmt::Debug for Provider<'rng, R> {
+    fn fmt(&self, _: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        todo!()
     }
 }
 
-impl SecureRandom for Provider {
+
+
+impl<'rng, R: RngCore + CryptoRng + Send + Sync> Provider<'rng, R> {
+
+    /// ```
+    /// let rustcrypto_provider = rustls_rustcrypto::Provider::new();
+    /// ```
+    #[cfg(feature = "getrandom")]
+    pub fn new() -> Provider<'rng, R> {
+        Self::new_from_rng(ChosenRng)
+    }
+
+    /// ```
+    /// let mut rng = rand_core::OsRng;
+    /// let rustcrypto_provider = rustls_rustcrypto::Provider::new_from_rng(&mut rng);
+    /// ```
+    pub fn new_from_rng(csprng: &'rng mut R) -> Provider<R> {        
+        Provider { csprng: Arc::new(Mutex::new(csprng)) }
+    }
+    pub fn rustls_crypto_provider(&'static self) -> CryptoProvider {
+
+        let mut csprng_m = self.csprng.lock().unwrap();
+        let mut csprng = csprng_m.deref_mut();
+        
+        CryptoProvider {
+            cipher_suites: ALL_CIPHER_SUITES.to_vec(),
+            //kx_groups: kx::ALL_KX_GROUPS.to_vec(),
+            kx_groups: kx::generate_kx_groups(&mut csprng),
+            signature_verification_algorithms: verify::ALGORITHMS,
+            secure_random: self,
+            key_provider: self,
+        }
+    }
+}
+
+
+impl<'rng, R: RngCore + CryptoRng + Send + Sync> SecureRandom for Provider<'rng, R> {
     fn fill(&self, bytes: &mut [u8]) -> Result<(), GetRandomFailed> {
-        use rand_core::RngCore;
-        rand_core::OsRng
+        let x = self.csprng.lock().unwrap()
             .try_fill_bytes(bytes)
-            .map_err(|_| GetRandomFailed)
+            .map_err(|_| GetRandomFailed);
+        x
     }
 }
 
-impl KeyProvider for Provider {
+impl<'rng, R: RngCore + CryptoRng + Send + Sync> KeyProvider for Provider<'rng, R> {
     fn load_private_key(
         &self,
         key_der: pki_types::PrivateKeyDer<'static>,
